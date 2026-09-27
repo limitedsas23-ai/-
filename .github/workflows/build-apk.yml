@@ -30,7 +30,6 @@ jobs:
         shell: bash
         run: |
           set -e
-
           mkdir -p extracted
 
           ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
@@ -40,12 +39,8 @@ jobs:
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
-
+          echo "ZIP: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d extracted
-
-          echo "Extracted files:"
-          find extracted -maxdepth 3 -type f | head -100
 
       - name: Find Gradle project
         shell: bash
@@ -59,23 +54,70 @@ jobs:
           \) | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: settings.gradle(.kts) not found"
-            echo "Contents of extracted archive:"
+            echo "ERROR: Gradle project not found"
             find extracted -maxdepth 5 -type f
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$SETTINGS")
 
-          echo "Gradle project found:"
-          echo "$PROJECT_DIR"
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Show project structure
+          echo "Gradle project:"
+          echo "$PROJECT_DIR"
+
+      - name: Automatically fix duplicate Kotlin plugin
+        shell: bash
         run: |
-          echo "Building from: $PROJECT_DIR"
-          find "$PROJECT_DIR" -maxdepth 3 -type f | sort | head -200
+          set -e
+
+          BUILD_FILE="$PROJECT_DIR/app/build.gradle.kts"
+
+          if [ ! -f "$BUILD_FILE" ]; then
+            echo "ERROR: app/build.gradle.kts not found"
+            find "$PROJECT_DIR" -maxdepth 4 -type f
+            exit 1
+          fi
+
+          echo "Original plugins:"
+          sed -n '1,60p' "$BUILD_FILE"
+
+          python3 - "$BUILD_FILE" <<'PY'
+          import sys
+          from pathlib import Path
+
+          file = Path(sys.argv[1])
+          text = file.read_text()
+
+          # If the modern Kotlin Android plugin is present,
+          # remove the old duplicate kotlin("android") declaration.
+          if 'id("org.jetbrains.kotlin.android")' in text:
+              lines = text.splitlines()
+              result = []
+
+              for line in lines:
+                  stripped = line.strip()
+
+                  if stripped.startswith('kotlin("android")'):
+                      continue
+
+                  if stripped.startswith("apply(plugin ="):
+                      if "kotlin" in stripped.lower():
+                          continue
+
+                  if stripped.startswith('apply(plugin="'):
+                      if "kotlin" in stripped.lower():
+                          continue
+
+                  result.append(line)
+
+              text = "\n".join(result) + "\n"
+
+          file.write_text(text)
+          PY
+
+          echo "Fixed plugins:"
+          sed -n '1,60p' "$BUILD_FILE"
 
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
@@ -83,6 +125,7 @@ jobs:
           gradle assembleDebug --no-daemon --stacktrace
 
       - name: Find APK
+        shell: bash
         run: |
           find "$PROJECT_DIR" -type f -name "*.apk" -print
 
