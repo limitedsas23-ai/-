@@ -30,6 +30,7 @@ jobs:
         shell: bash
         run: |
           set -e
+
           mkdir -p extracted
 
           ZIP_FILE=$(find . -maxdepth 2 -type f -iname "*.zip" | head -n 1)
@@ -39,7 +40,7 @@ jobs:
             exit 1
           fi
 
-          echo "ZIP: $ZIP_FILE"
+          echo "Using ZIP: $ZIP_FILE"
           unzip -q "$ZIP_FILE" -d extracted
 
       - name: Find Gradle project
@@ -50,11 +51,10 @@ jobs:
           SETTINGS=$(find extracted -type f \( \
             -name "settings.gradle" \
             -o -name "settings.gradle.kts" \
-            -o -name "settings.gradle.dcl" \
           \) | head -n 1)
 
           if [ -z "$SETTINGS" ]; then
-            echo "ERROR: Gradle project not found"
+            echo "ERROR: settings.gradle(.kts) not found"
             find extracted -maxdepth 5 -type f
             exit 1
           fi
@@ -66,58 +66,43 @@ jobs:
           echo "Gradle project:"
           echo "$PROJECT_DIR"
 
-      - name: Automatically fix duplicate Kotlin plugin
+      - name: Fix AGP 9 built-in Kotlin compatibility
         shell: bash
         run: |
           set -e
 
-          BUILD_FILE="$PROJECT_DIR/app/build.gradle.kts"
+          PROPERTIES="$PROJECT_DIR/gradle.properties"
 
-          if [ ! -f "$BUILD_FILE" ]; then
-            echo "ERROR: app/build.gradle.kts not found"
-            find "$PROJECT_DIR" -maxdepth 4 -type f
-            exit 1
+          touch "$PROPERTIES"
+
+          if grep -q '^android\.builtInKotlin=' "$PROPERTIES"; then
+            sed -i 's/^android\.builtInKotlin=.*/android.builtInKotlin=false/' "$PROPERTIES"
+          else
+            echo 'android.builtInKotlin=false' >> "$PROPERTIES"
           fi
 
-          echo "Original plugins:"
-          sed -n '1,60p' "$BUILD_FILE"
+          if grep -q '^android\.newDsl=' "$PROPERTIES"; then
+            sed -i 's/^android\.newDsl=.*/android.newDsl=false/' "$PROPERTIES"
+          else
+            echo 'android.newDsl=false' >> "$PROPERTIES"
+          fi
 
-          python3 - "$BUILD_FILE" <<'PY'
-          import sys
-          from pathlib import Path
+          echo "Final gradle.properties:"
+          cat "$PROPERTIES"
 
-          file = Path(sys.argv[1])
-          text = file.read_text()
-
-          # If the modern Kotlin Android plugin is present,
-          # remove the old duplicate kotlin("android") declaration.
-          if 'id("org.jetbrains.kotlin.android")' in text:
-              lines = text.splitlines()
-              result = []
-
-              for line in lines:
-                  stripped = line.strip()
-
-                  if stripped.startswith('kotlin("android")'):
-                      continue
-
-                  if stripped.startswith("apply(plugin ="):
-                      if "kotlin" in stripped.lower():
-                          continue
-
-                  if stripped.startswith('apply(plugin="'):
-                      if "kotlin" in stripped.lower():
-                          continue
-
-                  result.append(line)
-
-              text = "\n".join(result) + "\n"
-
-          file.write_text(text)
-          PY
-
-          echo "Fixed plugins:"
-          sed -n '1,60p' "$BUILD_FILE"
+      - name: Show Android/Kotlin configuration
+        shell: bash
+        run: |
+          echo "Project: $PROJECT_DIR"
+          echo
+          echo "app/build.gradle.kts:"
+          sed -n '1,80p' "$PROJECT_DIR/app/build.gradle.kts"
+          echo
+          echo "settings.gradle:"
+          sed -n '1,120p' "$PROJECT_DIR/settings.gradle.kts" 2>/dev/null || true
+          echo
+          echo "settings.gradle:"
+          sed -n '1,120p' "$PROJECT_DIR/settings.gradle" 2>/dev/null || true
 
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
